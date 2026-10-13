@@ -72,3 +72,11 @@ Ein S19j Pro zieht rund 3 kW. Unverifizierte Chiptreiber starten nur mit
 schlagen absichtlich fehl. Erste Tests nur mit einem Hashboard an einem
 strombegrenzten Labornetzteil. Siehe docs/PORTING.md, Abschnitt
 „Inbetriebnahme-Reihenfolge".
+
+## Lizenz
+
+GNU Affero General Public License v3.0 – siehe [LICENSE](LICENSE).
+
+minerd ist ein unabhängiges Projekt und kein offizieller Bestandteil von
+libbitcoin. libbitcoin-server dient als Gegenstelle (Stratum), libbitcoin-system
+ist optional einbindbar.
