@@ -56,28 +56,44 @@ und eine Zeile in `board/platform.cpp`.
 
 ## Mitschnitt-Checkliste S19j Pro (BM1362)
 
-Ziel: Jede `VERIFY`-Markierung in `bm1362.cpp` und in den S19j-Pro-Profilen
-durch gemessene Werte ersetzen, danach `traits.verified = true` setzen.
+Ziel: Jeden Wert in `bm1362.cpp` mit eigenem Mitschnitt bestätigen, danach
+`traits.verified = true` setzen. Viele Werte sind bereits aus Mujinas
+BM13xx-Referenz übernommen (teils aus einem S19j-Pro-Mitschnitt); die Tags im
+Code zeigen die Herkunft: `[CAPTURE]`, `[REF]`, `[INFERRED]`, `[DERIVED]`,
+`[UNKNOWN]`.
 
 Aufbau: Logic-Analyzer an TX/RX einer Kette zwischen Steuerplatine und
-Hashboard (UART, anfangs 115200 Baud, 8N1). Zusätzlich I²C (SDA/SCL) zum
-PIC bzw. DC-DC und zum APW12. Stock-Firmware einmal kalt starten und bis zum
-stabilen Hashen mitschneiden.
+Hashboard (UART, anfangs 115200 Baud, 8N1), zusätzlich I²C (SDA/SCL) zum PIC
+bzw. DC-DC und zum APW12. Stock-Firmware kalt starten und bis zum stabilen
+Hashen mitschneiden.
 
-| # | Was | Wo im Code |
-|---|---|---|
-| 1 | Antwort auf `55 AA 52 05 00 00 0A` → Chip-ID, Antwortlänge | `traits.chip_id`, `response_len` |
-| 2 | Registersequenz nach der Adressierung | `init_registers` |
-| 3 | Adressabstand (126 Chips → 2?) | wird berechnet; prüfen |
-| 4 | Ticket-Mask- und Version-Mask-Werte | `reg_ticket_mask`, `version_mask_value` |
-| 5 | PLL-Schritte der Frequenzrampe | `pll`, `pll_register_value` |
-| 6 | Wechsel auf schnelle UART (Register + Wert) | `fast_uart` |
-| 7 | Jobframe: Länge, Feldreihenfolge, Byte-Order | `encode_job` |
-| 8 | Nonce-Antwort: Job-ID-Bits, Version-Bits, Chip-Adresse, Typ-Flag | `decode_response` |
-| 9 | Temperatursensoren über ASIC-I²C-Passthrough | `IAsicChain::read_temperatures` (BM13xx: TODO) |
-| 10 | APW12: Einschalten, Spannung setzen, Rücklesen, Fehlerbits | `power.cpp` `Apw12Psu` |
-| 11 | PIC: Enable, Spannung, Heartbeat (falls vorhanden) | `power.cpp` `PicRegulator` |
-| 12 | noPIC-Boards: DC-DC-Controller-Typ | neuer Regulator `dcdc-direct` |
+| # | Was | Stand (Quelle) | Im eigenen Mitschnitt prüfen |
+|---|---|---|---|
+| 1 | Chip-ID, Antwortlänge | `13 62 03 00`, 11 Byte (Capture) | ob Chips direkt nach Reset die 9-Byte-Kurzform senden |
+| 2 | Antwort-CRC5 und Typbits | CRC5 über Payload + 3 Typbits, gegen veröffentlichte Frames getestet | – |
+| 3 | Adressabstand | Schritt 2, Chip 110 = 0xDC (Capture) | Adressen 0x00 … 0xFA |
+| 4 | Version-Mask-Register | `0x9000FFFF`, 1× vor, 2× nach Erkennung (Capture) | – |
+| 5 | Init-Register | SOFT_RESET, MISC `0xB000C100`, Core-Mailbox (Capture/Ref), Rest abgeleitet | **vollständige Reihenfolge** (Referenz bricht ab) |
+| 6 | PLL | FB_DIV 0x10–0xFA, VCO 2000–3200 MHz, Feldlayout (Ref) | Rampenschritte und Endwert der Stock-Firmware |
+| 7 | Fast-UART | Register 0x28 = `0x11300000` → 3,125 Mbaud (Capture) | Zeitpunkt in der Sequenz |
+| 8 | Jobframe | 82 Byte, Hashes mit umgekehrter Wortreihenfolge (Ref) | an einem mitgeschnittenen Job nachrechnen |
+| 9 | Nonce-Antwort | 5-Bit-Job-ID, 3-Bit-Subcore, Chipadresse in Nonce-Bits 24–18 (Capture) | – |
+| 10 | HASH_COUNTING_NUMBER | aus Formel abgeleitet (Derived) | **tatsächlicher Wert** |
+| 11 | Temperatur | BM1362-ADC über 0xD0/0xDC/0xE4, nicht entschlüsselt | **Sequenz und Umrechnung** |
+| 12 | APW12 | unbekannt | **I²C-Protokoll** |
+| 13 | PIC | unbekannt | **I²C-Protokoll** |
+| 14 | noPIC-Boards | unbekannt | DC-DC-Controller-Typ |
+| 15 | Spannungsdomänen | 42 × 3 Chips, kein UART-Relay (Capture) | – |
+
+## Quellen
+
+- Mujina, BM13xx Chip Reference (GPL-3.0-or-later):
+  https://github.com/256foundation/mujina/blob/main/mujina-miner/src/asic/bm13xx/REFERENCE.md
+- ESP-Miner (Bitaxe, GPL-3.0): https://github.com/bitaxeorg/ESP-Miner
+- skot/BM1397 (BM1397/BM1366-Doku): https://github.com/skot/BM1397
+
+Übernommen werden nur Protokollfakten (Registeradressen, Werte, Formate),
+kein Code.
 
 ## Inbetriebnahme-Reihenfolge auf echter Hardware
 

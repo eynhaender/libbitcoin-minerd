@@ -1,10 +1,10 @@
 // BM1366 (Antminer S19 XP / S19k Pro, Bitaxe Ultra).
 //
-// The register values below follow the public single-chip bring-up in
-// ESP-Miner (bitaxeorg). They are the reference for the BM1366-style codec
-// that BM1362 currently reuses. Multi-chip Antminer chains may need additional
-// writes (I/O driver strength per chip, domain-specific settings) – confirm
-// with a UART capture of stock firmware before trusting them on 3 kW hardware.
+// Register values follow the public single-chip bring-up in ESP-Miner
+// (bitaxeorg). Frame, job and response layouts follow Mujina's BM13xx
+// reference and are shared with BM1362. Multi-chip Antminer chains may need
+// additional writes – confirm with a UART capture of stock firmware before
+// trusting this on 3 kW hardware.
 
 #include "minerd/asic/bm13xx/variants.hpp"
 
@@ -13,46 +13,65 @@
 namespace minerd::asic::bm13xx {
 
 Bytes encode_job_bm1366_style(const work::WorkItem& w, std::uint8_t chip_job_id) {
-    // Layout: job_id | num_midstates | starting_nonce[4] | nbits[4] | ntime[4]
-    //         | merkle_root[32] | prev_hash[32] | version[4]           (82 bytes)
+    // Full job format (BM1362 .. BM1370), 82 bytes (Mujina BM13xx reference):
+    //   job_header | num_midstates=1 | starting_nonce[4]=0 | nbits[4] LE | ntime[4] LE
+    //   | merkle_root[32] | prev_hash[32] | version[4] LE
+    // Both hashes: the header's eight 4-byte words in reversed word order,
+    // bytes inside each word unchanged.
     Bytes p(82, 0);
     p[0] = chip_job_id;
-    p[1] = 0x01;  // chip derives midstates itself
-    // starting nonce = 0 (bytes 2..5)
-    std::memcpy(p.data() + 6, w.header.data() + work::header::kNbits, 4);   // LE, as in header
-    std::memcpy(p.data() + 10, w.header.data() + work::header::kNtime, 4);  // LE, as in header
-    std::memcpy(p.data() + 14, w.header.data() + work::header::kMerkleRoot, 32);  // internal order
-    // Previous hash in Stratum word order (each 32-bit word byte-swapped).
-    const std::uint8_t* prev = w.header.data() + work::header::kPrevHash;
-    for (int i = 0; i < 8; ++i)
-        for (int b = 0; b < 4; ++b) p[std::size_t(46 + 4 * i + b)] = prev[4 * i + (3 - b)];
-    std::memcpy(p.data() + 78, w.header.data() + work::header::kVersion, 4);  // LE
+    p[1] = 0x01;
+    std::memcpy(p.data() + 6, w.header.data() + work::header::kNbits, 4);
+    std::memcpy(p.data() + 10, w.header.data() + work::header::kNtime, 4);
+    auto put_words_reversed = [&](std::size_t dst, std::size_t src) {
+        for (int i = 0; i < 8; ++i)
+            std::memcpy(p.data() + dst + 4 * std::size_t(i), w.header.data() + src + 4 * std::size_t(7 - i), 4);
+    };
+    put_words_reversed(14, work::header::kMerkleRoot);
+    put_words_reversed(46, work::header::kPrevHash);
+    std::memcpy(p.data() + 78, w.header.data() + work::header::kVersion, 4);
     return p;
 }
 
-std::optional<DecodedResponse> decode_response_bm1366_style(std::span<const std::uint8_t> f) {
-    // AA 55 | v0 v1 v2 v3 | b6 | b7 | b8 b9 | flags/crc
+std::uint8_t chip_address_from_nonce(std::uint32_t header_nonce) {
+    return std::uint8_t(((bswap32(header_nonce) >> 18) & 0x7F) << 1);
+}
+
+std::optional<DecodedResponse> decode_response_full(std::span<const std::uint8_t> f,
+                                                    std::uint8_t (*job_byte_to_id)(std::uint8_t),
+                                                    std::uint8_t subcore_mask) {
+    // AA 55 | b2 b3 b4 b5 | b6 | b7 | b8 b9 | type(3)/crc5(5)
     if (f.size() < 11 || f[0] != 0xAA || f[1] != 0x55) return std::nullopt;
     DecodedResponse r;
-    const bool is_nonce = (f[10] & 0x80) != 0;  // UNVERIFIED for BM1362: type flag in last byte
-    if (!is_nonce) {
+    switch (response_type(f)) {
+    case resp::TYPE_REGISTER:
         r.kind = DecodedResponse::Kind::Register;
         r.value = read_be32(f.data() + 2);
         r.chip_address = f[6];
         r.reg = f[7];
         return r;
+    case resp::TYPE_NONCE:
+        r.kind = DecodedResponse::Kind::Nonce;
+        r.nonce = read_le32(f.data() + 2);
+        r.excess_difficulty = f[6];
+        r.chip_job_id = job_byte_to_id(f[7]);
+        r.subcore = std::uint8_t(f[7] & subcore_mask);
+        r.version_bits = std::uint32_t((std::uint32_t(f[8]) << 8) | f[9]) << 13;
+        r.chip_address = chip_address_from_nonce(r.nonce);
+        return r;
+    default:
+        return std::nullopt;
     }
-    r.kind = DecodedResponse::Kind::Nonce;
-    r.nonce = read_le32(f.data() + 2);
-    r.midstate_index = f[6];
-    r.chip_job_id = std::uint8_t((f[7] & 0xF0) >> 1);
-    r.version_bits = std::uint32_t((std::uint32_t(f[8]) << 8) | f[9]) << 13;
-    // Chip address is encoded in the nonce's top bits (nonce space is split by address).
-    r.chip_address = std::uint8_t(bswap32(r.nonce) >> 24);  // UNVERIFIED bit position
-    return r;
+}
+
+std::optional<DecodedResponse> decode_response_bm1366_style(std::span<const std::uint8_t> f) {
+    // BM1366 (ESP-Miner): job ids are multiples of 8 in the job frame; the
+    // response carries them in bits 7-4 shifted left by one.
+    return decode_response_full(f, [](std::uint8_t b) { return std::uint8_t((b & 0xF0) >> 1); }, 0x0F);
 }
 
 std::uint32_t version_mask_value_bm1366_style(std::uint32_t mask) {
+    // MIDSTATE_CONFIG: [31] auto [29:28] gen (1 = 8 midstates) [15:0] mask >> 13
     return 0x90000000u | ((mask >> 13) & 0xFFFFu);
 }
 
@@ -74,7 +93,6 @@ Bm13xxVariant build_bm1366() {
     v.response_len = 11;
     v.job_id_count = 16;
     v.job_id_step = 8;
-    v.work_interval_factor = 1.0;
 
     v.init_registers = {
         {0xA8, 0x00070000, false},
@@ -97,8 +115,9 @@ Bm13xxVariant build_bm1366() {
     v.encode_job = encode_job_bm1366_style;
     v.decode_response = decode_response_bm1366_style;
     v.version_mask_value = version_mask_value_bm1366_style;
-    v.hash_counting_value = [](unsigned /*chips*/) -> std::uint32_t { return 0x0000151C; };  // single-chip value
+    v.hash_counting_value = [](unsigned, double) -> std::uint32_t { return 0x0000151C; };  // ESP-Miner single-chip value
     v.fast_uart = [](unsigned /*baud*/) -> std::optional<RegisterWrite> { return std::nullopt; };  // TODO
+    v.work_interval_factor = 4096;  // chip rolls 2^16 versions per job (8192 sweeps); refresh at ~half coverage
     return v;
 }
 } // namespace

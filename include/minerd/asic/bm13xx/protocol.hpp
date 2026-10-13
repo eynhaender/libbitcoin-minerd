@@ -62,9 +62,9 @@ struct PllLimits {
 };
 /// Closest achievable frequency <= target (never overshoot).
 std::optional<PllSetting> solve_pll(double target_mhz, const PllLimits& limits = {});
-/// PLL0 register value in the BM1366-style encoding:
-///   [31:24] 0x40 | (VCO >= 2400 MHz ? 0x10 : 0)
-///   [23:16] fb_div  [15:8] ref_div  [7:4] post1-1  [3:0] post2-1
+/// PLL_DIVIDER (0x08) value:
+///   [31] LOCK (read-only) [30] PLLEN [29] BYPASS [28] VCOSEL (VCO >= 2.4 GHz)
+///   [27:16] FB_DIV [13:8] REF_DIV [7:4] PD1-1 [3:0] PD2-1
 std::uint32_t pll_register_value(const PllSetting& s, const PllLimits& limits = {});
 
 // --- difficulty ------------------------------------------------------------
@@ -73,6 +73,27 @@ std::uint32_t pll_register_value(const PllSetting& s, const PllLimits& limits = 
 std::uint32_t ticket_mask_value(double difficulty);
 /// Difficulty actually configured by ticket_mask_value(difficulty).
 double effective_ticket_difficulty(double difficulty);
+
+// --- responses ---------------------------------------------------------------
+// Last byte of every response: bits 7-5 = type, bits 4-0 = CRC5.
+// The CRC5 covers the payload bytes (everything between AA 55 and the last
+// byte) followed by the three type bits. Verified against the BM1362 nonce and
+// BM1370 register-reply examples in Mujina's BM13xx reference.
+namespace resp {
+constexpr std::uint8_t TYPE_REGISTER = 0;
+constexpr std::uint8_t TYPE_NONCE = 4;
+} // namespace resp
+std::uint8_t response_type(std::span<const std::uint8_t> frame);
+std::uint8_t response_crc5(std::span<const std::uint8_t> frame);  ///< expected CRC for a frame
+bool response_crc_valid(std::span<const std::uint8_t> frame);
+/// Builds a response frame (AA 55 + payload + type/CRC byte); used by tests and simulators.
+Bytes make_response(std::span<const std::uint8_t> payload, std::uint8_t type);
+
+// --- UART baud ---------------------------------------------------------------
+/// Baud = 25 MHz / (8 x (divider + 1)). Returns the divider whose rate is within
+/// `tolerance` (relative) of `baud`, if any.
+std::optional<unsigned> uart_divider_for(unsigned baud, double tolerance = 0.02);
+inline double uart_baud_for_divider(unsigned divider) { return 25e6 / (8.0 * (divider + 1)); }
 
 // --- response framing ------------------------------------------------------
 /// Reassembles fixed-length responses (starting with AA 55) from a byte stream,

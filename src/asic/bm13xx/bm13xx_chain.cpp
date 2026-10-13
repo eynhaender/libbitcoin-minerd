@@ -41,9 +41,13 @@ public:
         ctx_.serial->flush_input();
 
         // Version mask is written before enumeration on BM1366+ (as stock firmware does).
-        for (int i = 0; i < 3; ++i) MINERD_TRY(tx(cmd_write_register_all(v_.reg_version_mask, v_.version_mask_value(cfg.version_mask))));
+        const std::uint32_t vmask = v_.version_mask_value(cfg.version_mask);
+        for (unsigned i = 0; i < v_.version_mask_writes_before_enum; ++i)
+            MINERD_TRY(tx(cmd_write_register_all(v_.reg_version_mask, vmask)));
 
         MINERD_TRY(enumerate());
+        for (unsigned i = 0; i < v_.version_mask_writes_after_enum; ++i)
+            MINERD_TRY(tx(cmd_write_register_all(v_.reg_version_mask, vmask)));
         if (cfg.expected_chips && chips_.size() != cfg.expected_chips) {
             return Status::error("chain " + std::to_string(ctx_.chain_index) + ": found " + std::to_string(chips_.size()) +
                                  " chips, expected " + std::to_string(cfg.expected_chips));
@@ -68,7 +72,7 @@ public:
 
         MINERD_TRY(set_chip_difficulty(cfg.chip_difficulty));
         MINERD_TRY(set_all_frequency(v_.traits.freq_min_mhz));
-        MINERD_TRY(tx(cmd_write_register_all(v_.reg_hash_counting, v_.hash_counting_value(unsigned(chips_.size())))));
+        MINERD_TRY(write_hash_counting(cfg.frequency_mhz));
 
         if (cfg.fast_baud && cfg.fast_baud != cfg.baud) {
             if (auto w = v_.fast_uart(cfg.fast_baud)) {
@@ -95,7 +99,7 @@ public:
             MINERD_TRY(set_all_frequency(f));
             std::this_thread::sleep_for(20ms);
         }
-        return Status::ok();
+        return write_hash_counting(target);
     }
 
     Status set_chip_frequency(unsigned chip, double mhz) override {
@@ -151,6 +155,7 @@ public:
         std::lock_guard rx_lock(rx_mx_);
         while (true) {
             while (auto frame = framer_.next()) {
+                if (v_.check_response_crc && !response_crc_valid(*frame)) { ++crc_errors_; continue; }
                 auto r = v_.decode_response(*frame);
                 if (!r) { ++decode_errors_; continue; }
                 if (r->kind != DecodedResponse::Kind::Nonce) continue;  // late register reply
@@ -221,6 +226,7 @@ private:
                 quiet_until = std::chrono::steady_clock::now() + 200ms;
             }
             while (auto frame = framer_.next()) {
+                if (v_.check_response_crc && !response_crc_valid(*frame)) { ++crc_errors_; continue; }
                 auto r = v_.decode_response(*frame);
                 if (r && r->kind == DecodedResponse::Kind::Register && (r->value >> 16) == v_.traits.chip_id)
                     chips_.push_back(ChipState{});
@@ -230,6 +236,11 @@ private:
         }
         if (chips_.empty()) return Status::error("chain " + std::to_string(ctx_.chain_index) + ": no " + v_.traits.name + " chips answered");
         return Status::ok();
+    }
+
+    Status write_hash_counting(double freq_mhz) {
+        return tx(cmd_write_register_all(v_.reg_hash_counting,
+                                         v_.hash_counting_value(unsigned(chips_.size()), freq_mhz)));
     }
 
     Status set_all_frequency(double mhz) {
@@ -253,6 +264,7 @@ private:
     std::mutex rx_mx_;
     ResponseFramer framer_;
     std::uint64_t decode_errors_ = 0;
+    std::uint64_t crc_errors_ = 0;
 
     std::mutex jobs_mx_;
     std::array<JobSlot, 128> jobs_{};

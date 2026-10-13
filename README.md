@@ -10,9 +10,9 @@ Gegenstelle für Solo-/Heim-Mining ist libbitcoin-server (`bs`) über Stratum.
 | Bereich | Status |
 |---|---|
 | Arbeitspipeline (Stratum V1 + BIP310, Merkle, extranonce2, Midstates, Host-Verifikation) | fertig, getestet gegen Referenzwerte |
-| BM13xx-Protokoll (CRC5/CRC16, Framing, PLL, Ticket-Mask) | fertig, CRC5 gegen bekannte Frames geprüft |
+| BM13xx-Protokoll (CRC5/CRC16, Framing, Antwort-CRC, PLL, Ticket-Mask, Baudrate) | fertig, CRC gegen veröffentlichte Frames geprüft |
 | Generischer BM13xx-Kettentreiber | fertig, getestet gegen geskriptetes Chipmodell |
-| BM1362-Variante (S19j Pro) | **Gerüst, unverifiziert** – braucht UART-Mitschnitt |
+| BM1362-Variante (S19j Pro) | Werte aus Mujinas BM13xx-Referenz (teils S19j-Pro-Mitschnitt), Herkunft je Wert im Code markiert; **auf Hardware unverifiziert**, Init-Sequenz unvollständig |
 | BM1366-Variante | Werte aus öffentlichem Single-Chip-Code, Antminer-Ketten unverifiziert |
 | APW12-Netzteil, PIC-Regler | **fail-closed Platzhalter** – braucht I²C-Mitschnitt |
 | Simulator (Ketten, Lüfter, PSU, lokaler Pool) | fertig, Daemon läuft komplett ohne Hardware |

@@ -98,9 +98,12 @@ std::optional<PllSetting> solve_pll(double target, const PllLimits& L) {
 }
 
 std::uint32_t pll_register_value(const PllSetting& s, const PllLimits& L) {
+    // [31] LOCK (ro) [30] PLLEN [29] BYPASS [28] VCOSEL [27:16] FB_DIV
+    // [13:8] REF_DIV [7:4] PD1-1 [3:0] PD2-1
     const double vco = L.ref_clock_mhz * s.fb_div / s.ref_div;
-    const std::uint32_t top = (vco >= 2400.0) ? 0x50u : 0x40u;
-    return (top << 24) | ((s.fb_div & 0xFFu) << 16) | ((s.ref_div & 0xFFu) << 8) |
+    std::uint32_t v = 1u << 30;               // PLLEN
+    if (vco >= 2400.0) v |= 1u << 28;         // VCOSEL
+    return v | ((s.fb_div & 0xFFFu) << 16) | ((s.ref_div & 0x3Fu) << 8) |
            (((s.post_div1 - 1) & 0x0Fu) << 4) | ((s.post_div2 - 1) & 0x0Fu);
 }
 
@@ -127,6 +130,50 @@ std::uint32_t ticket_mask_value(double difficulty) {
 }
 
 double effective_ticket_difficulty(double difficulty) { return double(pow2_floor(difficulty)); }
+
+namespace {
+std::uint8_t crc5_bits(std::span<const std::uint8_t> bytes, std::uint8_t extra_bits, int extra_count) {
+    std::uint8_t crc = 0x1F;
+    auto step = [&](bool din) {
+        const bool msb = (crc >> 4) & 1;
+        crc = std::uint8_t((crc << 1) & 0x1F);
+        if (din ^ msb) crc ^= 0x05;
+    };
+    for (std::uint8_t b : bytes)
+        for (int i = 7; i >= 0; --i) step((b >> i) & 1);
+    for (int i = extra_count - 1; i >= 0; --i) step((extra_bits >> i) & 1);
+    return crc;
+}
+} // namespace
+
+std::uint8_t response_type(std::span<const std::uint8_t> f) { return f.empty() ? 0xFF : std::uint8_t(f.back() >> 5); }
+
+std::uint8_t response_crc5(std::span<const std::uint8_t> f) {
+    if (f.size() < 4) return 0xFF;
+    return crc5_bits(f.subspan(2, f.size() - 3), response_type(f), 3);
+}
+
+bool response_crc_valid(std::span<const std::uint8_t> f) {
+    return f.size() >= 4 && f[0] == 0xAA && f[1] == 0x55 && (f.back() & 0x1F) == response_crc5(f);
+}
+
+Bytes make_response(std::span<const std::uint8_t> payload, std::uint8_t type) {
+    Bytes f{0xAA, 0x55};
+    f.insert(f.end(), payload.begin(), payload.end());
+    f.push_back(std::uint8_t((type & 0x07) << 5));
+    f.back() |= response_crc5(f);
+    return f;
+}
+
+std::optional<unsigned> uart_divider_for(unsigned baud, double tol) {
+    if (baud == 0) return std::nullopt;
+    const double exact = 25e6 / (8.0 * baud) - 1.0;
+    const long d = std::lround(exact);
+    if (d < 0 || d > 0xFF) return std::nullopt;
+    const double actual = uart_baud_for_divider(unsigned(d));
+    if (std::fabs(actual - baud) / baud > tol) return std::nullopt;
+    return unsigned(d);
+}
 
 void ResponseFramer::feed(std::span<const std::uint8_t> bytes) { buf_.insert(buf_.end(), bytes.begin(), bytes.end()); }
 
