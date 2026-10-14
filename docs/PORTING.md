@@ -95,6 +95,10 @@ Hashen mitschneiden.
 Übernommen werden nur Protokollfakten (Registeradressen, Werte, Formate),
 kein Code.
 
+## Beobachtete Hardware
+
+- [S19j Pro, Steuerplatine Ctrl_C78 V2.6010 auf S19J_IO_BOARD_V2_0](hardware/s19jpro_ctrl_c78.md) (BeagleBone-Variante)
+
 ## Inbetriebnahme-Reihenfolge auf echter Hardware
 
 1. `--dry-run` mit dem Profil der Platine.
